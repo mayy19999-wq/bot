@@ -6,9 +6,9 @@
 ## משתני סביבה ב-Render
 | משתנה | ערך |
 |---|---|
-| `TELEGRAM_TOKEN` | הטוקן מ-BotFather |
+| `TELEGRAM_TOKEN` |8627224703:AAEMNsSigauEkqnr99QExq3RU7Yw6UDp7sM |
 | `GROQ_API_KEY` | המפתח מ-Groq |
-| `ALLOWED_USERS` | המזהה שלך בטלגרם (הבוט שולח אותו כשכותבים לו) |
+| `ALLOWED_USERS` |MAY2026_BOT |
 
 ה-Webhook נרשם אוטומטית בכל הפעלה של השרת.
 
