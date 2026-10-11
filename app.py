@@ -1,9 +1,10 @@
 """
 בוט תמלול בטלגרם
 מעבירים לבוט הודעה קולית (גם מוואטסאפ דרך "שיתוף") -> הוא מחזיר תמלול בעברית.
-Telegram Bot API + Whisper דרך Groq (חינם). רץ על Render.
+Telegram Bot API + Gemini (חינם, עברית טובה), עם גיבוי ל-Whisper דרך Groq. רץ על Render.
 """
 import os
+import base64
 import hashlib
 import logging
 import threading
@@ -17,7 +18,17 @@ log = logging.getLogger("transcriber")
 
 # ---------- הגדרות (משתני סביבה ב-Render) ----------
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]            # מ-BotFather
-TRANSCRIBE_API_KEY = os.environ.get("TRANSCRIBE_API_KEY") or os.environ["GROQ_API_KEY"]
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# המודל הראשון שעובד ייבחר. אפשר לקבוע מודל משלך במשתנה GEMINI_MODEL
+GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", ""),
+                             "gemini-3-flash-preview", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"] if m]
+GEMINI_PROMPT = os.environ.get("GEMINI_PROMPT", (
+    "תמלל את ההקלטה מילה במילה, בשפה שבה מדברים (בדרך כלל עברית). "
+    "הוסף פיסוק נכון וחלק לפסקאות כשיש מעבר נושא. "
+    "אל תתרגם, אל תסכם ואל תוסיף הערות. החזר רק את התמלול עצמו. "
+    "אם אין דיבור בהקלטה, החזר מחרוזת ריקה."))
+# Whisper דרך Groq – גיבוי אם Gemini לא זמין (אופציונלי)
+TRANSCRIBE_API_KEY = os.environ.get("TRANSCRIBE_API_KEY") or os.environ.get("GROQ_API_KEY", "")
 TRANSCRIBE_BASE_URL = os.environ.get("TRANSCRIBE_BASE_URL", "https://api.groq.com/openai/v1")
 TRANSCRIBE_MODEL = os.environ.get("TRANSCRIBE_MODEL", "whisper-large-v3")
 LANGUAGE = os.environ.get("LANGUAGE", "he")
@@ -31,7 +42,9 @@ FILE_API = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}"
 SECRET = hashlib.sha256(TELEGRAM_TOKEN.encode()).hexdigest()[:32]  # מוודא שהבקשות באמת מטלגרם
 
 app = Flask(__name__)
-client = OpenAI(api_key=TRANSCRIBE_API_KEY, base_url=TRANSCRIBE_BASE_URL)
+client = OpenAI(api_key=TRANSCRIBE_API_KEY, base_url=TRANSCRIBE_BASE_URL) if TRANSCRIBE_API_KEY else None
+if not GEMINI_API_KEY and not client:
+    raise RuntimeError("צריך להגדיר GEMINI_API_KEY או GROQ_API_KEY")
 seen_updates = set()
 
 
@@ -87,7 +100,43 @@ def find_audio(msg):
 AUDIO_EXT = (".ogg", ".mp3", ".m4a", ".wav", ".mp4", ".webm", ".flac", ".mpeg", ".mpga")
 
 
-def transcribe(data, filename):
+MIME_BY_EXT = {".ogg": "audio/ogg", ".opus": "audio/ogg", ".oga": "audio/ogg", ".mp3": "audio/mp3",
+               ".mpeg": "audio/mpeg", ".mpga": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac",
+               ".wav": "audio/wav", ".flac": "audio/flac", ".amr": "audio/amr", ".webm": "audio/webm",
+               ".mp4": "video/mp4"}
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+working_model = None  # המודל שהצליח לאחרונה
+
+
+def transcribe_gemini(data, filename):
+    global working_model
+    ext = os.path.splitext(filename.lower())[1]
+    body = {
+        "contents": [{"parts": [
+            {"inline_data": {"mime_type": MIME_BY_EXT.get(ext, "audio/ogg"),
+                             "data": base64.b64encode(data).decode()}},
+            {"text": GEMINI_PROMPT},
+        ]}],
+        "generationConfig": {"temperature": 0},
+    }
+    models = ([working_model] if working_model else []) + [m for m in GEMINI_MODELS if m != working_model]
+    last_error = None
+    for model in models:
+        r = requests.post(GEMINI_URL.format(model=model), params={"key": GEMINI_API_KEY},
+                          json=body, timeout=120)
+        if r.status_code == 200:
+            parts = (r.json().get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+            text = "".join(p.get("text", "") for p in parts).strip()
+            working_model = model
+            return text
+        last_error = f"{model}: {r.status_code} {r.text[:300]}"
+        log.warning("gemini failed – %s", last_error)
+        if r.status_code in (400, 401, 403) and "API key" in r.text:
+            break  # מפתח שגוי – אין טעם לנסות מודלים אחרים
+    raise RuntimeError(last_error or "gemini failed")
+
+
+def transcribe_whisper(data, filename):
     name = filename.lower()
     if name.endswith(".opus"):
         name = name[:-5] + ".ogg"         # Whisper מכיר opus בתור ogg
@@ -96,6 +145,17 @@ def transcribe(data, filename):
     result = client.audio.transcriptions.create(
         model=TRANSCRIBE_MODEL, file=(name, data), language=LANGUAGE)
     return result.text.strip()
+
+
+def transcribe(data, filename):
+    if GEMINI_API_KEY:
+        try:
+            return transcribe_gemini(data, filename)
+        except Exception:
+            if not client:
+                raise
+            log.exception("gemini failed, falling back to whisper")
+    return transcribe_whisper(data, filename)
 
 
 def handle_audio(chat_id, msg_id, file_id, filename):

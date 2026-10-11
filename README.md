@@ -7,7 +7,8 @@
 | משתנה | ערך |
 |---|---|
 | `TELEGRAM_TOKEN` | הטוקן מ-BotFather |
-| `GROQ_API_KEY` | המפתח מ-Groq |
+| `GEMINI_API_KEY` | מפתח חינמי מ-aistudio.google.com (התמלול הראשי) |
+| `GROQ_API_KEY` | המפתח מ-Groq (גיבוי, אופציונלי) |
 | `ALLOWED_USERS` | המזהה שלך בטלגרם (הבוט שולח אותו כשכותבים לו) |
 
 ה-Webhook נרשם אוטומטית בכל הפעלה של השרת.
